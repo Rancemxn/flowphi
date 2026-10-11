@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 import time
 import uuid
@@ -11,7 +12,7 @@ from PySide6.QtCore import (QItemSelection, QItemSelectionModel, Qt, QThread,
                            QTimer, QUrl, Slot)
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSlider, QSplitter, QTabWidget, QTableView, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -23,8 +24,8 @@ from flowphi.ui.jobs import AsyncCall, JobRunner
 from flowphi.ui.model import PlanDocument, read_document, write_json_atomic
 from flowphi.ui.pose import PoseCanvas, PosePanel, PoseTimeline
 from flowphi.ui.task_status import TASK_NAMES, TaskStatus
-from flowphi.ui.sources import DEFAULT_CACHE, ROOT, create_demo, load_source
-from flowphi.config import ASSETS, OUTPUTS, PROJECTS
+from flowphi.ui.sources import ChartSelectionRequired, DEFAULT_CACHE, ROOT, create_demo, load_source
+from flowphi.config import APP_LOG, ASSETS, OUTPUTS, PROJECTS
 from flowphi.ui.validation import draft_warnings, edit_check
 from flowphi.ui.widgets import (ChartCanvas, ContactTableModel, FINGER_NAMES, FingeringTimeline,
                             PathTableModel, contact_label, finger_name)
@@ -585,7 +586,12 @@ class EditorWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self.log_dock.hide()
         self.task_status.log_button.clicked.connect(self.show_job_log)
-        self.menuBar().addMenu('窗口').addAction(self.log_dock.toggleViewAction())
+        window_menu = self.menuBar().addMenu('窗口')
+        window_menu.addAction(self.log_dock.toggleViewAction())
+        window_menu.addAction(self._action('显示任务进度', self.task_status.show))
+        app_log_action = self._action('打开程序日志', self.open_app_log)
+        app_log_action.setToolTip(str(APP_LOG))
+        window_menu.addAction(app_log_action)
         self.play_shortcut = QAction(self)
         self.play_shortcut.setShortcut('Space')
         self.play_shortcut.triggered.connect(self.toggle_play)
@@ -614,6 +620,28 @@ class EditorWindow(QMainWindow):
         thread.start()
         self._refresh_actions()
 
+    def _load_source(self, path, success, **options):
+        def read():
+            try:
+                return load_source(path, **options)
+            except ChartSelectionRequired as choice:
+                return choice
+
+        def opened(result):
+            if self._pending_close:
+                return
+            if isinstance(result, ChartSelectionRequired):
+                entry, accepted = QInputDialog.getItem(self, '选择谱面',
+                    f'{Path(path).name}\n选择要打开的谱面', result.entries, 0, False)
+                if accepted:
+                    self._load_source(path, success, **(options | dict(chart_entry=entry)))
+                else:
+                    self._progress('已取消选择谱面')
+            else:
+                success(result)
+
+        self._async(read, opened)
+
     @Slot(object)
     def _io_succeeded(self, message):
         handler = self._io_handlers.pop(message['key'], None)
@@ -621,6 +649,7 @@ class EditorWindow(QMainWindow):
             try:
                 handler(message['value'])
             except Exception as exc:
+                logging.getLogger(__name__).exception('处理后台操作结果失败')
                 self._error(str(exc))
 
     @Slot(object)
@@ -658,7 +687,7 @@ class EditorWindow(QMainWindow):
         def start():
             self.pause()
             self._progress('正在读取谱面…')
-            self._async(lambda: load_source(path), self._source_opened)
+            self._load_source(path, self._source_opened)
         self._guard_replace(start)
 
     def _source_opened(self, source):
@@ -699,14 +728,14 @@ class EditorWindow(QMainWindow):
         self._guard_replace(start)
 
     def _project_opened(self, document):
+        logging.getLogger(__name__).info('打开工程：%s', document.path)
         if document.chart.get('path') and Path(document.chart['path']).is_file():
             self.document = document
             self._set_source(None)
             self._set_document(document)
-            def read():
-                return load_source(document.chart['path'], expected=document.chart,
-                                   audio=document.chart.get('audio'), background=document.chart.get('background'))
-            self._async(read, lambda source: self._attach_project(document, source))
+            self._load_source(document.chart['path'], lambda source: self._attach_project(document, source),
+                              expected=document.chart, audio=document.chart.get('audio'),
+                              background=document.chart.get('background'))
         elif not document.chart.get('sha256') and self.source:
             self._attach_project(document, self.source)
         else:
@@ -715,7 +744,7 @@ class EditorWindow(QMainWindow):
             self._set_document(document)
             path, _ = QFileDialog.getOpenFileName(self, '选择此指法对应的原谱面', str(ROOT), '谱面 (*.zip *.pez *.json *.pec)')
             if path:
-                self._async(lambda: load_source(path, expected=document.chart), lambda source: self._attach_project(document, source))
+                self._load_source(path, lambda source: self._attach_project(document, source), expected=document.chart)
             else:
                 self._progress('方案已打开通过“文件 → 关联原谱面”添加谱面后，即可检查方案、播放预览和生成视频')
 
@@ -725,9 +754,9 @@ class EditorWindow(QMainWindow):
         document = self.document
         path, _ = QFileDialog.getOpenFileName(self, '关联此工程的原谱面', str(ROOT), '谱面 (*.zip *.pez *.json *.pec)')
         if path:
-            self._async(lambda: load_source(path, expected=document.chart,
-                        audio=document.chart.get('audio'), background=document.chart.get('background')),
-                        lambda source: self._attach_project(document, source, undoable=True))
+            self._load_source(path, lambda source: self._attach_project(document, source, undoable=True),
+                              expected=document.chart, audio=document.chart.get('audio'),
+                              background=document.chart.get('background'))
 
     def _attach_project(self, document, source, *, undoable=False):
         expected = set(range(source.reference['note_count']))
@@ -771,7 +800,8 @@ class EditorWindow(QMainWindow):
 
     def _demo_ready(self, source):
         self._source_opened(source)
-        self.jobs.start('generate', chart=source.reference['path'], options=dict(settings=dict(fingers=['index', 'middle'], beam_width=4)))
+        self.jobs.start('generate', chart=source.reference['path'], chart_reference=dict(source.reference),
+                        options=dict(settings=dict(fingers=['index', 'middle'], beam_width=4)))
 
     def generate(self):
         if not self.source:
@@ -784,7 +814,8 @@ class EditorWindow(QMainWindow):
             options['pose'] = copy.deepcopy(self.document.pose)
         for key in ('model', 'blender'):
             self.settings.setValue(key, options[key])
-        self._guard_replace(lambda: self.jobs.start('generate', chart=self.source.reference['path'], options=options))
+        self._guard_replace(lambda: self.jobs.start('generate', chart=self.source.reference['path'],
+                            chart_reference=dict(self.source.reference), options=options))
 
     def save_project(self, checked=False, *, save_as=False, on_saved=None):
         if not self.document:
@@ -804,6 +835,7 @@ class EditorWindow(QMainWindow):
         state, chart, title = document._state, copy.deepcopy(document.chart), document.title
         def saved(_):
             document.mark_saved(path, state=state, chart=chart, title=title)
+            logging.getLogger(__name__).info('保存工程：%s', path)
             self._update_title()
             self._progress('工程已保存：' + str(path))
             if on_saved:
@@ -1028,7 +1060,7 @@ class EditorWindow(QMainWindow):
     def _restore_chart(self):
         document = self.document
         reference = document.chart
-        if self.source and all(self.source.reference.get(key) == reference.get(key) for key in ('path', 'sha256')):
+        if self.source and all(self.source.reference.get(key) == reference.get(key) for key in ('path', 'sha256', 'chart_entry')):
             self.source.reference = copy.deepcopy(reference)
             audio = reference.get('audio')
             url = QUrl.fromLocalFile(audio) if audio else QUrl()
@@ -1046,9 +1078,8 @@ class EditorWindow(QMainWindow):
                 source.reference = copy.deepcopy(reference)
                 self._set_source(source)
                 self._set_document(document)
-            self._async(lambda: load_source(reference['path'], expected=reference,
-                        audio=reference.get('audio'), background=reference.get('background')),
-                        restored)
+            self._load_source(reference['path'], restored, expected=reference,
+                              audio=reference.get('audio'), background=reference.get('background'))
 
     def _point_selected(self, contact, point):
         if self.selected_ids != {contact}:
@@ -1497,7 +1528,10 @@ class EditorWindow(QMainWindow):
             self.summary.setText(f'{doc.title}  ·  {len(doc.note_contacts)} 个音符 / {len(doc)} 段动作  ·  指法修改 {len(doc.edits)} 段  ·  {pose_label}')
         elif self.source:
             self.setWindowTitle('flowphi')
-            self.summary.setText(f"{Path(self.source.reference['path']).stem}  ·  {self.source.reference['note_count']} 个音符  ·  尚未生成指法")
+            title = Path(self.source.reference['path']).stem
+            if self.source.reference.get('chart_entry'):
+                title += ' / ' + self.source.reference['chart_entry']
+            self.summary.setText(f"{title}  ·  {self.source.reference['note_count']} 个音符  ·  尚未生成指法")
         else:
             self.summary.setText('打开谱面 → 生成指法初稿 → 调整指法与姿态 → 保存工程或生成视频')
 
@@ -1524,6 +1558,12 @@ class EditorWindow(QMainWindow):
         if self._job_log and self._job_log.is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._job_log)))
 
+    def open_app_log(self):
+        if not APP_LOG.is_file():
+            self._error('程序日志尚未创建：' + str(APP_LOG))
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(APP_LOG))):
+            self._error('无法打开程序日志，请手动查看：' + str(APP_LOG))
+
     def _progress(self, text):
         self.progress_label.setText(text)
 
@@ -1537,6 +1577,7 @@ class EditorWindow(QMainWindow):
             self.open_log_button.setEnabled(True)
 
     def _error(self, message):
+        logging.getLogger(__name__).error('%s', message)
         self._progress(message)
 
     @Slot(object)

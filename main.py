@@ -1,7 +1,8 @@
 import argparse
+import logging
 import sys
 
-from flowphi.runtime import WORKER_MODULES, restore_standard_streams
+from flowphi.runtime import WORKER_MODULES, configure_logging, restore_standard_streams
 
 
 def main():
@@ -16,6 +17,7 @@ def main():
         else:
             from flowphi.rendering.pipeline import main as run
         return run()
+    configure_logging()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--chart', help='Chart ZIP/PEZ, JSON or PEC to open')
     parser.add_argument('--project', help='Saved .fingering.json or motion-plan.json')
@@ -23,7 +25,15 @@ def main():
     args = parser.parse_args()
     from flowphi.ui.appearance import apply_startup_scale
     scale = apply_startup_scale()
-    from PySide6.QtCore import QLibraryInfo, QTimer, QTranslator
+    from PySide6.QtCore import QLibraryInfo, QTimer, QTranslator, QtMsgType, qInstallMessageHandler
+    qt_levels = {QtMsgType.QtDebugMsg: logging.DEBUG, QtMsgType.QtInfoMsg: logging.INFO,
+                 QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
+                 QtMsgType.QtFatalMsg: logging.CRITICAL}
+
+    def qt_message(kind, context, message):
+        logging.getLogger('qt').log(qt_levels.get(kind, logging.WARNING), '%s: %s', context.category, message)
+
+    qInstallMessageHandler(qt_message)
     from PySide6.QtWidgets import QApplication
     from flowphi.config import OUTPUTS, PROJECTS
     from flowphi.ui.gui import EditorWindow
@@ -44,7 +54,9 @@ def main():
         QTimer.singleShot(0, lambda: window.open_chart(args.chart))
     elif args.demo:
         QTimer.singleShot(0, window.open_demo)
-    return app.exec()
+    result = app.exec()
+    logging.info('FlowPhi 退出 · 返回码 %s', result)
+    return result
 
 
 if __name__ == '__main__':

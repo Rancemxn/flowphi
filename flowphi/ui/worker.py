@@ -107,11 +107,15 @@ def execute(request):
     if kind == 'generate':
         from flowphi.planning.planner import Settings, plan
         from rich.console import Console
-        source = load_source(request['chart'], cache)
+        reference = request.get('chart_reference', {})
+        source = load_source(request['chart'], cache, expected=reference,
+                             audio=reference.get('audio'), background=reference.get('background'))
         options = request.get('options', {})
         settings = Settings(**options.get('settings', {}))
         profile = measure_profile(options, cache)
         report_log(f"谱面：{source.reference['path']} · {source.reference['note_count']} 个音符")
+        if source.reference.get('chart_entry'):
+            report_log('包内谱面：' + source.reference['chart_entry'])
         report_log(f"分配设置：{len(settings.fingers) * 2} 根手指，每步保留 {settings.beam_width} 个候选")
         event('生成指法初稿', stage='plan')
         def planning_progress(done, total, task):
@@ -227,6 +231,8 @@ def execute(request):
                '--hand-scale', str(document.baseline['profile']['scale']),
                '--width', str(options.get('width', 1280)), '--height', str(options.get('height', 720)),
                '--fps', str(options.get('fps', 30)), '--output', render_output)
+    if source.reference.get('chart_entry'):
+        command += ['--chart-entry', source.reference['chart_entry']]
     if source.reference.get('background'):
         command += ['--background', source.reference['background']]
     if options.get('full'):

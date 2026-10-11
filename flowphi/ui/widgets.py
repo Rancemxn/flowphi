@@ -412,9 +412,6 @@ class ChartCanvas(QWidget):
                 label = ' / '.join(f'#{i + 1}' for i in ids[:3]) + ('…' if len(ids) > 3 else '')
                 painter.drawText(pos + QPointF(15, -8), f'{label} {finger_name(c)}')
         painter.restore()
-        painter.setPen(QColor('#9cacc2'))
-        label = '初稿轨迹' if self.compare else '当前轨迹'
-        painter.drawText(QPointF(rect.left() + 12, rect.top() + 20), f'{label}  ·  显示未来 {self.lookahead:g} 秒的音符')
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton or not self.document:

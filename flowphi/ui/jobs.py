@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,7 @@ class AsyncCall(QThread):
         try:
             self.succeeded.emit(dict(key=self.key, value=self.function()))
         except Exception as exc:
+            logging.getLogger(__name__).exception('后台操作失败')
             self.failed.emit(dict(key=self.key, error=str(exc)))
 
 
@@ -63,6 +65,7 @@ class JobRunner(QObject):
             request['revision'] = document.revision
             request['document_id'] = id(document)
         self.request = request
+        logging.getLogger(__name__).info('开始后台任务：%s · 日志：%s', kind, work / 'job.log')
         self.running, self.cancelled, self.buffer = True, False, b''
         self.busy_changed.emit(True)
         self.progress.emit('准备后台任务…')
@@ -177,6 +180,9 @@ class JobRunner(QObject):
         if self.log:
             self.log.close()
             self.log = None
+        logging.getLogger(__name__).info('后台任务结束：%s · 成功=%s · 取消=%s · 错误=%s',
+                                         self.request['kind'], result.get('ok'), result.get('cancelled', False),
+                                         result.get('error', ''))
         result['request'] = self.request
         self.running = False
         self.busy_changed.emit(False)

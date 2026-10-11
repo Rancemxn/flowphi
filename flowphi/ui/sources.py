@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -28,45 +29,63 @@ class ChartSource:
         return max((n.seconds + n.hold for line in self.chart.lines for n in line.notes), default=0.) + self.chart.offset + 2.
 
 
-def load_source(path, cache=DEFAULT_CACHE, *, expected=None, audio=None, background=None):
+class ChartSelectionRequired(ValueError):
+    def __init__(self, entries):
+        super().__init__('压缩包包含多个谱面，请选择要打开的谱面')
+        self.entries = entries
+
+
+def load_source(path, cache=DEFAULT_CACHE, *, expected=None, audio=None, background=None, chart_entry=None):
     from flowphi.rendering.pipeline import unpack
     path = Path(path).resolve()
     if not path.is_file():
         raise ValueError(f'找不到谱面：{path}')
     container_digest = file_digest(path)
-    destination = Path(cache) / 'charts' / container_digest
+    destination = (Path(cache) / 'charts' / container_digest).resolve()
     # Unpack verifies entry paths and unpacked size. Cache only our successful
     # extraction; a cancelled or interrupted extraction is retried.
     ready = destination.parent / (container_digest + '.ready.json')
-    if ready.is_file():
-        data = json.loads(ready.read_text(encoding='utf-8'))
-        def cached_file(name):
-            target = (destination / name).resolve()
-            if not target.is_relative_to(destination.resolve()) or not target.is_file():
+    archive = path.suffix.lower() in ('.zip', '.pez')
+    selected = None
+    if archive:
+        if ready.is_file():
+            data = json.loads(ready.read_text(encoding='utf-8'))
+            entries = data['charts'] if 'charts' in data else [data['chart']]
+            paths = [(destination / entry).resolve() for entry in entries]
+            if not paths or any(not target.is_relative_to(destination) or not target.is_file() for target in paths):
                 raise ValueError('谱面缓存不完整，请清理该谱面的缓存后重新打开')
-            return target
-        chart_path = cached_file(data['chart'])
-        music = cached_file(data['audio']) if data.get('audio') else None
-        picture = cached_file(data['background']) if data.get('background') else None
-    elif path.suffix.lower() in ('.zip', '.pez'):
-        chart_path, music, picture = unpack(path, destination)
-        data = dict(chart=str(chart_path.relative_to(destination)),
-                    audio=str(music.relative_to(destination)) if music else None,
-                    background=str(picture.relative_to(destination)) if picture else None)
-        from flowphi.ui.model import write_json_atomic
-        write_json_atomic(ready, data)
+        else:
+            paths = unpack(path, destination)
+            from flowphi.ui.model import write_json_atomic
+            write_json_atomic(ready, dict(charts=[p.relative_to(destination).as_posix() for p in paths]))
+        charts = {p.relative_to(destination).as_posix(): p for p in paths}
+        selected = chart_entry or (expected or {}).get('chart_entry')
+        if selected:
+            selected = Path(selected).as_posix()
+        expected_digest = (expected or {}).get('sha256')
+        if chart_entry is None and expected_digest and selected not in charts:
+            charts = {entry: p for entry, p in charts.items() if file_digest(p) == expected_digest}
+            if not charts:
+                raise ValueError('压缩包中没有与工程记录一致的谱面，请重新选择原谱面')
+            selected = None
+        if selected:
+            if selected not in charts:
+                raise ValueError(f'压缩包中找不到所选谱面：{selected}')
+        elif len(charts) == 1:
+            selected = next(iter(charts))
+        else:
+            raise ChartSelectionRequired(list(charts))
+        chart_path = charts[selected]
     else:
         chart_path = path
-        music = picture = None
     digest = file_digest(chart_path)
     if expected and expected.get('sha256') and digest != expected['sha256']:
         raise ValueError('所选谱面与工程记录不一致请重新选择原谱面；不会将旧修改套用到其他音符上')
     content = chart_path.read_text(encoding='utf-8-sig')
     chart = load_chart(content, source=chart_path)
-    media_root = destination if path.suffix.lower() in ('.zip', '.pez') else None
+    media_root = destination if archive else None
     metadata = json.loads(content).get('META', {}) if chart.format == 'rpe' else None
-    found_music, found_picture = find_media(chart_path, media_root, metadata=metadata)
-    music, picture = found_music or music, found_picture or picture
+    music, picture = find_media(chart_path, media_root, metadata=metadata)
     if not any(line.notes for line in chart.lines):
         raise ValueError('谱面中没有可编辑的音符')
     if not math.isfinite(chart.offset) or any(not math.isfinite(n.seconds) or not math.isfinite(n.hold) or n.hold < 0
@@ -75,9 +94,12 @@ def load_source(path, cache=DEFAULT_CACHE, *, expected=None, audio=None, backgro
     reference = dict(path=str(path), sha256=digest, container_sha256=container_digest,
                      note_count=sum(len(line.notes) for line in chart.lines),
                      width=chart.width, height=chart.height, offset=chart.offset)
+    if selected:
+        reference['chart_entry'] = selected
     for key, value in (('audio', audio or music), ('background', background or picture)):
         if value:
             reference[key] = str(Path(value).resolve())
+    logging.getLogger(__name__).info('读取谱面：%s · 包内文件：%s · %s 个音符', path, selected or '-', reference['note_count'])
     return ChartSource(chart, chart_path, reference)
 
 

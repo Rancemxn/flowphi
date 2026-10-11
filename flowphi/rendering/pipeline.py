@@ -173,27 +173,21 @@ def extract_archive(source: Path, destination: Path):
                     shutil.copyfileobj(src, dst)
 
 
-def unpack(source: Path, destination: Path) -> tuple[Path, Path | None, Path | None]:
+def unpack(source: Path, destination: Path) -> list[Path]:
     if not zipfile.is_zipfile(source):
-        music, picture = find_media(source)
-        return source, music, picture
+        return [source]
     extract_archive(source, destination)
     candidates = sorted(p for p in destination.rglob('*') if p.suffix.lower() in ('.json', '.pec'))
     charts = []
-    metadata = {}
     for path in candidates:
         try:
-            content = path.read_text(encoding='utf-8-sig')
-            chart = load_chart(content, source=path)
+            load_chart(path.read_text(encoding='utf-8-sig'), source=path)
             charts.append(path)
-            if chart.format == 'rpe':
-                metadata[path] = json.loads(content).get('META', {})
         except (ValueError, KeyError, TypeError):
             continue
-    if len(charts) != 1:
-        raise ValueError('Archive must contain one chart; extract it and pass its path explicitly')
-    music, picture = find_media(charts[0], destination, metadata=metadata.get(charts[0]))
-    return charts[0], music, picture
+    if not charts:
+        raise ValueError('压缩包中没有可读取的 JSON 或 PEC 谱面')
+    return charts
 
 
 def prepare_resources(source: Path, destination: Path):
@@ -269,6 +263,7 @@ def render_screen(chart, image_path, directory, job):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('chart', type=Path, help='chart ZIP/PEZ, JSON or PEC')
+    parser.add_argument('--chart-entry', help='path of the selected chart inside a ZIP/PEZ')
     parser.add_argument('--model', type=Path, required=True, help='Hands + armature.blend')
     parser.add_argument('--audio', type=Path, help='overrides the music in the chart archive')
     parser.add_argument('--psap', type=Path, required=True, help='Touch sequence exported by the editor')
@@ -340,7 +335,21 @@ def main(argv=None):
             raise ValueError('Output would overwrite an input model or video; choose another --output directory')
         out.mkdir(parents=True, exist_ok=True)
         report_progress('render.inputs', '准备渲染资源', force=True)
-        chart_path, music, picture = unpack(args.chart.resolve(), out / 'input')
+        charts = unpack(args.chart.resolve(), out / 'input')
+        if args.chart_entry:
+            chart_path = (out / 'input' / args.chart_entry).resolve()
+            if chart_path not in charts:
+                raise ValueError(f'压缩包中找不到所选谱面：{args.chart_entry}')
+        elif len(charts) == 1:
+            chart_path = charts[0]
+        else:
+            entries = '\n'.join(path.relative_to(out / 'input').as_posix() for path in charts)
+            raise ValueError('压缩包包含多个谱面，请通过 --chart-entry 选择：\n' + entries)
+        content = chart_path.read_text(encoding='utf-8-sig')
+        chart = load_chart(content, source=chart_path)
+        meta = json.loads(content).get('META', {}) if chart.format == 'rpe' else {}
+        media_root = out / 'input' if zipfile.is_zipfile(args.chart) else None
+        music, picture = find_media(chart_path, media_root, metadata=meta)
         picture = args.background.resolve() if args.background else picture
         music = args.audio.resolve() if args.audio else music
         report_log('曲绘：' + (str(picture) if picture else '未找到，将使用纯色背景'))
@@ -354,12 +363,10 @@ def main(argv=None):
             args.start, args.duration = 0., music_duration
         frame_count = clip_frames(args.start, args.duration, args.fps, music_duration)
         duration = frame_count / args.fps
-        chart = load_chart(chart_path.read_text(encoding='utf-8-sig'), source=chart_path)
         from flowphi.rendering.chart import background_image, mix_audio, read_info
         from flowphi.rendering.blender import fit_screen_in_frame
         metadata = read_info(chart_path.parent / 'info.yml') | read_info(chart_path.parent / 'info.txt')
         if chart.format == 'rpe':
-            meta = json.loads(chart_path.read_text(encoding='utf-8-sig')).get('META', {})
             metadata = {key.lower(): value for key, value in meta.items()} | metadata
         if not math.isfinite(chart.offset):
             raise ValueError('Chart offset must be finite')
