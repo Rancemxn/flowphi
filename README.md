@@ -19,5 +19,3 @@ uv run python main.py
 ## 许可
 
 MIT
-
-部分代码来自 [Phisap](https://github.com/Rancemxn/phisap-next)
