@@ -1,0 +1,30 @@
+[project]
+name = "flowphi"
+version = "1.0.0"
+description = "A desktop editor for Phigros fingering and hand motion"
+readme = "README.md"
+requires-python = "==3.13.*"
+license = { file = "LICENSE" }
+dependencies = [
+    "glcontext==3.0.0",
+    "numpy==2.4.6",
+    "pyside6==6.11.1",
+    "rich==15.0.0",
+    "shapely==2.1.2",
+    "skia-python==144.0.post2",
+]
+
+[project.urls]
+Repository = "https://github.com/Rancemxn/flowphi"
+Issues = "https://github.com/Rancemxn/flowphi/issues"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+build = [
+    "pyinstaller>=6.16,<7",
+]
+dev = [
+    "fake-bpy-module-4-5==20260730",
+]

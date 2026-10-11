@@ -1,0 +1,48 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+
+      - name: Build executable
+        run: uv run --locked --group build pyinstaller --noconfirm flowphi.spec
+
+      - name: Package ZIP
+        run: |
+          $version = (uv version --short).Trim()
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw 'Tag does not match the version in pyproject.toml'
+          }
+          Compress-Archive -Path dist/FlowPhi/* -DestinationPath "dist/FlowPhi-v$version-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: FlowPhi-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: 
+          gh release create "$env:GITHUB_REF_NAME" (Get-Item dist/*.zip).FullName --verify-tag --generate-notes

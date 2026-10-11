@@ -1,0 +1,23 @@
+# FlowPhi
+
+## 生成视频
+
+生成手部视频还需要：
+  - **Blender**
+  - **FFmpeg 和 FFprobe**
+  - **手部骨骼模型**
+    - 可到[BlendSwap](https://blendswap.com/blend/22269)下载
+  - **游戏资源包**
+
+## 从源码运行
+
+```sh
+uv sync --locked
+uv run python main.py
+```
+
+## 许可
+
+MIT
+
+部分代码来自 [Phisap](https://github.com/Rancemxn/phisap-next)

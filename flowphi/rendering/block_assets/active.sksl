@@ -1,0 +1,65 @@
+uniform shader mask;
+uniform shader effects;
+uniform shader ready;
+uniform shader scene;
+uniform shader noise;
+uniform shader spark;
+uniform float2 resolution;
+uniform float2 maskSize;
+uniform float2 effectSize;
+uniform float2 sceneSize;
+uniform float time;
+
+float3 rgb2hsv(float3 c) {
+    float4 k=float4(0,-1.0/3,2.0/3,-1);
+    float4 p=mix(float4(c.bg,k.wz),float4(c.gb,k.xy),step(c.b,c.g));
+    float4 q=mix(float4(p.xyw,c.r),float4(c.r,p.yzx),step(p.x,c.r));
+    float d=q.x-min(q.w,q.y);
+    return float3(abs(q.z+(q.w-q.y)/(6*d+1e-10)),d/(q.x+1e-10),q.x);
+}
+float3 hsv2rgb(float3 c) {
+    float3 p=abs(fract(c.xxx+float3(1,2.0/3,1.0/3))*6-3);
+    return c.z*mix(float3(1),clamp(p-1,0,1),c.y);
+}
+float3 overlay(float3 base,float3 blend) {
+    return mix(2*base*blend,1-2*(1-base)*(1-blend),step(float3(.5),base));
+}
+float2 quantize(float2 uv) {
+    return (floor(uv*resolution/6)*6+3)/resolution;
+}
+half4 main(float2 pixel) {
+    float2 screenUV=pixel/resolution;
+    float2 uv=float2(screenUV.x,1-screenUV.y);
+    float fill=mask.eval(screenUV*maskSize).r;
+    float edge=effects.eval(floor(screenUV*effectSize)+.5).r;
+    float glow=effects.eval(screenUV*effectSize).g;
+    float warning=ready.eval(screenUV*maskSize).r;
+    if (fill+edge+glow+warning<.0001) return half4(0);
+    float3 rgb=float3(0);
+    float alpha=0;
+    if (fill+edge+glow>.0001) {
+        float2 dir=float2(.7071067812,.7071067812);
+        float2 ortho=float2(-dir.y,dir.x);
+        float2 base=uv*float2(.8,.3);
+        float2 a=quantize(base+dir*(time/20*1.5));
+        float2 b=quantize(base+ortho*(time/20*1.5));
+        float n1=noise.eval(float2(a.x,1-a.y)*256).r;
+        float n2=noise.eval(float2(b.x,1-b.y)*256).r;
+        float mean=(n1+n2)*.5;
+        float2 offset=dir*(n1-.5)+ortho*(n2-.5);
+        float2 bg=quantize(uv)+offset*.15;
+        float3 background=scene.eval(float2(bg.x,1-bg.y)*sceneSize).rgb;
+        float2 sp=uv*float2(3,1.2)+offset*2.39;
+        float speck=spark.eval(float2(sp.x,1-sp.y)*128).r;
+        float3 sparks=speck*float3(1,.28490567,.28490567)*mean*5.69;
+        float3 shifted=hsv2rgb(rgb2hsv(background)+sparks*.2);
+        float3 blended=clamp(overlay(shifted,sparks),0,1);
+        float3 filling=mix(float3(.71320748,.23549296,.23549296)-mean*.411,blended,.667);
+        float outsideGlow=glow*(1-edge-fill)*.8;
+        rgb=filling*fill+float3(1,.33018857,.33018857)*edge*.8+
+            float3(1,.17924517,.17924517)*outsideGlow;
+        alpha=fill*.667+edge*.8+outsideGlow;
+    }
+    rgb+=warning*warning*.12*(sin(time*37.9)*.5+1);
+    return half4(clamp(rgb,0,1),clamp(alpha,0,1));
+}

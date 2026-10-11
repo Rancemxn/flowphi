@@ -1,0 +1,24 @@
+uniform shader mask;
+uniform shader noise;
+uniform shader spark;
+uniform float2 resolution;
+uniform float2 maskSize;
+uniform float time;
+half4 main(float2 pixel) {
+    float coverage=mask.eval(pixel/resolution*maskSize).r;
+    if (coverage<.0001) return half4(0);
+    float2 uv=float2(pixel.x/resolution.x,1-pixel.y/resolution.y);
+    float2 dir=float2(.7071067812,.7071067812);
+    float2 ortho=float2(-dir.y,dir.x);
+    float2 base=uv*float2(.5,.2);
+    float2 a=base+dir*(time/20*.3);
+    float2 b=base+ortho*(time/20*.3);
+    float n1=noise.eval(float2(a.x,1-a.y)*256).r;
+    float n2=noise.eval(float2(b.x,1-b.y)*256).r;
+    float2 offset=dir*(n1-.5)+ortho*(n2-.5);
+    float2 sp=uv*float2(3,1.2)+offset*2.29;
+    float speck=spark.eval(float2(sp.x,1-sp.y)*128).r;
+    float3 fill=float3(.497,.13766898,.13766898)*.4;
+    float3 sparks=speck*float3(.31132078,.07783020,.07783020)*(n1+n2)*.5*3.5;
+    return half4(clamp((fill+sparks)*coverage,0,1),1);
+}
