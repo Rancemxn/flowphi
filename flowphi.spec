@@ -1,7 +1,11 @@
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 # Blender runs these modules with its own Python, so ship their source too.
-datas = collect_data_files('flowphi', include_py_files=True)
+datas = [(str(path), str(path.parent.relative_to(SPECPATH)))
+         for path in Path(SPECPATH, 'flowphi').rglob('*')
+         if path.suffix in ('.py', '.sksl')]
 datas += [('README.md', '.'), ('LICENSE', '.')]
 for package in ('glcontext', 'numpy', 'pyside6', 'rich', 'shapely', 'skia-python'):
     datas += copy_metadata(package, recursive=True)
