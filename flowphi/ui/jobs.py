@@ -14,7 +14,7 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Sign
 
 from flowphi.ui.model import write_json_atomic
 from flowphi.ui.sources import DEFAULT_CACHE, ROOT
-from flowphi.runtime import module_command
+from flowphi.runtime import NO_WINDOW, module_command
 
 
 class AsyncCall(QThread):
@@ -206,7 +206,7 @@ class JobRunner(QObject):
                 # stops its Blender / FFmpeg child processes and leaves other jobs alone.
                 self.killer = AsyncCall('cancel', lambda: subprocess.run(
                     ['taskkill', '/PID', str(pid), '/T', '/F'], stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10, check=True), self)
+                    stderr=subprocess.DEVNULL, creationflags=NO_WINDOW, timeout=10, check=True), self)
                 self.killer.failed.connect(self._cancel_failed)
                 self.killer.finished.connect(self.killer.deleteLater)
                 self.killer.start()

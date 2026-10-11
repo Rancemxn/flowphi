@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from flowphi.motion import MotionIndex, finger_pose, palm_offsets, point_at, stroke_shape, wrist_pose
 from flowphi.pose import (PoseSampler, contact_reach, finger_deltas, finger_planes, fit_wrist,
                          frame_values, idle_weight, motion_style, rotation_matrix, wrist_constraints)
+from flowphi.runtime import NO_WINDOW
 
 FINGERS = {
     'index': ('Bone', 'Bone.001', 'Bone.002'),
@@ -1177,7 +1178,7 @@ def main(job):
             bpy.ops.render.render(write_still=True)
             render_shadow(scene, meshes, out / 'shadows' / f'{video_frame:05d}.png')
             if video_frame in selected:
-                subprocess.run(composite_command(job, video_frame), check=True)
+                subprocess.run(composite_command(job, video_frame), check=True, creationflags=NO_WINDOW)
         if is_video_frame and video_frame > last_progress:
             last_progress = video_frame
             print(f'HANDCAM_PROGRESS {video_frame}', flush=True)

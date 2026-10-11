@@ -4,7 +4,7 @@ import math
 import time
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout
 
 
 TASK_NAMES = dict(generate='生成指法初稿', replan='重新分配手指', zone='计算可用区域',
@@ -31,7 +31,6 @@ class TaskStatus(QFrame):
         layout.setSpacing(4)
         top = QHBoxLayout()
         self.title = QLabel('暂无后台任务')
-        self.title.setWordWrap(True)
         self.metrics = QLabel()
         top.addWidget(self.title, 1)
         top.addWidget(self.metrics)
@@ -54,7 +53,10 @@ class TaskStatus(QFrame):
         row.addWidget(hide_button)
         layout.addLayout(row)
         self.detail = QLabel()
-        self.detail.setWordWrap(True)
+        # Reserve each text row so stage changes and long paths cannot resize the workspace.
+        for label in (self.title, self.detail):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            label.setFixedHeight(label.fontMetrics().lineSpacing())
         layout.addWidget(self.detail)
         self.name = '后台任务'
         self.active = False
@@ -123,13 +125,15 @@ class TaskStatus(QFrame):
             remaining = (now - self.stage_started) * (self.total - self.done) / self.done
             text += ' · 本阶段预计还需 ' + duration_text(remaining)
         self.metrics.setText(text)
+        self.title.setToolTip(self.title.text())
         details = [self._detail] if self._detail else []
         if self.warning_count:
             details.append(f'{self.warning_count} 条警告，详见日志')
         if self.active and now - self.updated >= 10:
             details.append(f'距上次进度更新 {int(now - self.updated)} 秒')
-        self.detail.setText(' · '.join(details))
-        self.detail.setVisible(bool(details))
+        detail = ' · '.join(details)
+        self.detail.setText(' '.join(detail.splitlines()))
+        self.detail.setToolTip(detail)
 
     def finish(self, message):
         self.active = False

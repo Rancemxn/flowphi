@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 
 WORKER_MODULES = frozenset(('flowphi.ui.worker', 'flowphi.rendering.pipeline'))
+NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
 def module_command(module, *arguments):

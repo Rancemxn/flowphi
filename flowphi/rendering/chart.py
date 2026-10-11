@@ -12,6 +12,7 @@ import skia
 from flowphi.charts.media import read_info
 from flowphi.charts.model import NoteType
 from flowphi.rendering.preview import ChartRenderer, make_paint
+from flowphi.runtime import NO_WINDOW
 
 # Drawing order/UI proportions informed by sim-phi/src/index.ts.
 # Atlas layout and Hold effects informed by Phira prpr/src/core/{resource,note}.rs.
@@ -285,7 +286,8 @@ def mix_audio(music, resources, hits, start, duration, volume, output):
         command += ['-i', str(path)]
         if seconds is not None:
             command += ['-t', str(seconds), '-af', f'aresample={rate}:async=1:first_pts=0,apad']
-        raw = subprocess.check_output(command + ['-vn', '-ac', '2', '-ar', str(rate), '-f', 'f32le', '-'])
+        raw = subprocess.check_output(command + ['-vn', '-ac', '2', '-ar', str(rate), '-f', 'f32le', '-'],
+                                      creationflags=NO_WINDOW)
         return np.frombuffer(raw, dtype='<f4').reshape(-1, 2)
     samples = round(duration * rate)
     original = decode(music, start, duration)

@@ -13,7 +13,7 @@ from flowphi.ui.model import PlanDocument, read_document, write_json_atomic
 from flowphi.ui.sources import DEFAULT_CACHE, ROOT, file_digest, load_source
 from flowphi.config import PACKAGE
 from flowphi.progress import report_log, report_progress
-from flowphi.runtime import module_command
+from flowphi.runtime import NO_WINDOW, module_command
 
 
 def event(message, **values):
@@ -22,9 +22,8 @@ def event(message, **values):
 
 
 def run(command, *, cwd=ROOT, log=None):
-    flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with subprocess.Popen(list(map(str, command)), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, encoding='utf-8', errors='replace', creationflags=flags) as process:
+                          text=True, encoding='utf-8', errors='replace', creationflags=NO_WINDOW) as process:
         try:
             for line in process.stdout:
                 if log:

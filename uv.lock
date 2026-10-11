@@ -22,7 +22,7 @@ wheels = [
 
 [[package]]
 name = "flowphi"
-version = "1.0.1"
+version = "1.0.2"
 source = { virtual = "." }
 dependencies = [
     { name = "glcontext" },

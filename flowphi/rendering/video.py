@@ -7,6 +7,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from flowphi.rendering.blender import camera_pixel, configure_camera, project_shadow_mesh, screen_rect
 from flowphi.progress import report_progress
+from flowphi.runtime import NO_WINDOW
 
 
 def chunk_command(job, start, count, left, top, hands, shadows, output):
@@ -35,7 +36,7 @@ def completed_chunk(path, job, count):
     try:
         info = json.loads(subprocess.check_output(
             ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', str(path)],
-            text=True, stderr=subprocess.DEVNULL))['streams'][0]
+            text=True, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW))['streams'][0]
         return (info['width'] == job['width'] and info['height'] == job['height']
                 and info['r_frame_rate'] == f"{job['fps']}/1" and int(info['nb_frames']) == count)
     except (subprocess.CalledProcessError, ValueError, KeyError, IndexError):
@@ -172,7 +173,7 @@ def main(job, resume=False):
             command = chunk_command(job, start, count, left, top, hands, shadows, temporary)
             begin = time.perf_counter()
             report_progress('video.composite', '合成视频画面', done=0, total=count, unit='帧', force=True)
-            with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, creationflags=NO_WINDOW) as process:
                 try:
                     for line in process.stdout:
                         if line.startswith('frame='):
@@ -202,7 +203,7 @@ def main(job, resume=False):
     subprocess.run(['ffmpeg', '-v', 'warning', '-y', '-f', 'concat', '-safe', '0', '-i', str(listing),
                     '-i', job['mixed_audio'], '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy',
                     '-c:a', 'aac', '-b:a', '192k', '-t', str(job['duration']), '-movflags', '+faststart',
-                    str(out / 'handcam.partial.mp4')], check=True)
+                    str(out / 'handcam.partial.mp4')], check=True, creationflags=NO_WINDOW)
     (out / 'handcam.partial.mp4').replace(out / 'handcam.mp4')
     for path in files:
         path.unlink()

@@ -19,6 +19,7 @@ from flowphi.charts.model import NoteType
 from flowphi.charts.loader import load_chart
 from flowphi.charts.media import find_media
 from flowphi.progress import report_log, report_progress, structured_output
+from flowphi.runtime import NO_WINDOW
 
 
 def progress_bar():
@@ -43,7 +44,7 @@ def run_blender(command, log_path, description, total, *, stage='animation'):
         structured_seen = False
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True, encoding='utf-8', errors='replace', bufsize=1,
-                              creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0) as process:
+                              creationflags=NO_WINDOW) as process:
             try:
                 for line in process.stdout:
                     log.write(line)
@@ -234,7 +235,8 @@ def render_screen(chart, image_path, directory, job):
         process = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pixel_format', 'bgra',
                                     '-video_size', f'{width}x{height}', '-framerate', str(job['fps']), '-i', '-',
                                     '-an', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '12', '-pix_fmt', 'yuv420p',
-                                    str(directory.parent / 'screen.partial.mp4')], stdin=subprocess.PIPE)
+                                    str(directory.parent / 'screen.partial.mp4')], stdin=subprocess.PIPE,
+                                    creationflags=NO_WINDOW)
     try:
         with progress_bar() as progress:
             task = progress.add_task('Chart video', total=job['frames'])
@@ -357,7 +359,7 @@ def main(argv=None):
             raise ValueError('Provide --audio, or a chart archive with one music file')
         probe = json.loads(subprocess.check_output([
             'ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(music),
-        ], text=True))
+        ], text=True, creationflags=NO_WINDOW))
         music_duration = float(probe['format']['duration'])
         if args.full:
             args.start, args.duration = 0., music_duration
@@ -474,7 +476,7 @@ def main(argv=None):
                 frame.unlink()
             subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', str(args.start), '-i', str(args.video),
                             '-vf', f'fps={args.fps},scale={sw}:{sh}', '-frames:v', str(frame_count),
-                            str(out / 'screen/%05d.png')], check=True)
+                            str(out / 'screen/%05d.png')], check=True, creationflags=NO_WINDOW)
             if not (out / 'screen' / f'{frame_count:05d}.png').exists():
                 raise ValueError('Autoplay video is shorter than the requested clip')
         else:
@@ -518,7 +520,7 @@ def main(argv=None):
             render_saved(out, blender)
         else:
             from flowphi.rendering.blender import composite_command
-            subprocess.run(composite_command(job), check=True)
+            subprocess.run(composite_command(job), check=True, creationflags=NO_WINDOW)
             (out / 'handcam.partial.mp4').replace(out / 'handcam.mp4')
         print(f'Video: {out / "handcam.mp4"}', flush=True)
         return 0

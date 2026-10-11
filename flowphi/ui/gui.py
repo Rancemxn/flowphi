@@ -13,7 +13,7 @@ from PySide6.QtCore import (QItemSelection, QItemSelectionModel, Qt, QThread,
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
     QSlider, QSplitter, QTabWidget, QTableView, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
@@ -560,7 +560,8 @@ class EditorWindow(QMainWindow):
         self.task_status = TaskStatus()
         outer.addWidget(self.task_status)
         self.progress_label = QLabel('就绪')
-        self.progress_label.setWordWrap(True)
+        self.progress_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.progress_label.setFixedHeight(self.progress_label.fontMetrics().lineSpacing())
         self.statusBar().addWidget(self.progress_label, 1)
         self.cancel_button = self.task_status.cancel_button
         self.cancel_button.clicked.connect(self.jobs.cancel)
@@ -1565,7 +1566,8 @@ class EditorWindow(QMainWindow):
             self._error('无法打开程序日志，请手动查看：' + str(APP_LOG))
 
     def _progress(self, text):
-        self.progress_label.setText(text)
+        self.progress_label.setText(' '.join(text.splitlines()))
+        self.progress_label.setToolTip(text)
 
     def _log(self, text):
         scroll = self.log_view.verticalScrollBar()
