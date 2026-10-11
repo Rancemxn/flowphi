@@ -32,6 +32,37 @@ jobs:
           }
           Compress-Archive -Path dist/FlowPhi/* -DestinationPath "dist/FlowPhi-v$version-windows-x64.zip"
 
+      - name: Package ZIP with FFmpeg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (uv version --short).Trim()
+          $ffmpegRelease = gh api repos/BtbN/FFmpeg-Builds/releases/latest | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the FFmpeg release' }
+          $ffmpegAsset = $ffmpegRelease.assets |
+            Where-Object { $_.name -match '^ffmpeg-n(\d+\.\d+)-latest-win64-gpl-\1\.zip$' } |
+            Sort-Object { [version]($_.name.Split('-')[1].Substring(1)) } -Descending |
+            Select-Object -First 1
+          if (-not $ffmpegAsset) { throw 'No stable Windows x64 GPL FFmpeg build was found' }
+          Write-Output "Bundling $($ffmpegAsset.name)"
+          $ffmpegArchive = Join-Path $env:RUNNER_TEMP $ffmpegAsset.name
+          Invoke-WebRequest -Uri $ffmpegAsset.browser_download_url -OutFile $ffmpegArchive
+          $digest = 'sha256:' + (Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne $ffmpegAsset.digest) { throw 'FFmpeg archive SHA256 does not match the upstream asset' }
+          $ffmpegUnpack = Join-Path $env:RUNNER_TEMP 'flowphi-ffmpeg'
+          Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegUnpack
+          $ffmpegRoots = @(Get-ChildItem -LiteralPath $ffmpegUnpack -Directory)
+          if ($ffmpegRoots.Count -ne 1) { throw 'Unexpected FFmpeg archive layout' }
+          $ffmpegRoot = $ffmpegRoots[0].FullName
+          New-Item -ItemType Directory -Path dist/FlowPhi/ffmpeg/bin | Out-Null
+          $ffmpegPrograms = @('ffmpeg.exe', 'ffprobe.exe') | ForEach-Object { Join-Path $ffmpegRoot "bin/$_" }
+          Copy-Item -LiteralPath $ffmpegPrograms -Destination dist/FlowPhi/ffmpeg/bin
+          Get-ChildItem -LiteralPath $ffmpegRoot | Where-Object Name -ne 'bin' |
+            Copy-Item -Destination dist/FlowPhi/ffmpeg -Recurse
+          $ffmpegAsset | Select-Object name, browser_download_url, digest | ConvertTo-Json |
+            Set-Content -LiteralPath dist/FlowPhi/ffmpeg/UPSTREAM.json -Encoding utf8
+          Compress-Archive -Path dist/FlowPhi/* -DestinationPath "dist/FlowPhi-v$version-windows-x64-with-ffmpeg.zip"
+
       - uses: actions/upload-artifact@v7
         if: github.event_name == 'workflow_dispatch'
         with:

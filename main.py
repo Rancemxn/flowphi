@@ -1,12 +1,17 @@
 import argparse
 import logging
+import os
 import sys
 
+from flowphi.config import ROOT
 from flowphi.runtime import WORKER_MODULES, configure_logging, restore_standard_streams
 
 
 def main():
     restore_standard_streams()
+    ffmpeg_bin = ROOT / 'ffmpeg' / 'bin'
+    if all((ffmpeg_bin / name).is_file() for name in ('ffmpeg.exe', 'ffprobe.exe')):
+        os.environ['PATH'] = str(ffmpeg_bin) + os.pathsep + os.environ.get('PATH', '')
     if sys.argv[1:2] == ['--run-module']:
         if len(sys.argv) < 3 or sys.argv[2] not in WORKER_MODULES:
             raise SystemExit('Unsupported background job')
