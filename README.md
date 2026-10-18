@@ -13,7 +13,7 @@
 
 ```sh
 uv sync --locked
-uv run python main.py
+uv run main.py
 ```
 
 ## 许可
