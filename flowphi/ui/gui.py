@@ -8,18 +8,19 @@ from pathlib import Path
 import time
 import uuid
 
-from PySide6.QtCore import (QItemSelection, QItemSelectionModel, Qt, QThread,
+from PySide6.QtCore import (QEvent, QItemSelection, QItemSelectionModel, Qt, QThread,
                            QTimer, QUrl, Slot)
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPalette
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QSplitter, QTabWidget, QTableView, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+    QSlider, QSplitter, QTabWidget, QTableView, QTextEdit, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from flowphi.ui.dialogs import (BatchPathDialog, FlickDialog, GenerateDialog, InterfaceScaleDialog,
                                PerformanceDialog, ReleaseDialog, RenderDialog)
 from flowphi.ui.appearance import app_settings, interface_scale
+from flowphi.ui.preferences import apply_preferences, read_preferences, save_preferences
 from flowphi.ui.jobs import AsyncCall, JobRunner
 from flowphi.ui.model import PlanDocument, read_document, write_json_atomic
 from flowphi.ui.pose import PoseCanvas, PosePanel, PoseTimeline
@@ -127,7 +128,7 @@ class EditorWindow(QMainWindow):
         self.timer.timeout.connect(self._tick)
         self._build_actions()
         self._build_workspace()
-        self._apply_performance()
+        apply_preferences(self, read_preferences(self.settings))
         self._refresh_actions()
 
     def _action(self, text, callback, shortcut=None, checkable=False):
@@ -154,6 +155,11 @@ class EditorWindow(QMainWindow):
             action.setIconText(f'{action.text()} ({shortcuts})')
             action.setText(f'{action.text()}\t{shortcuts}')
         self.validate_action = self._action('检查方案', self.validate_plan)
+        self.auto_check_action = self._action('自动检查（编辑、导出与渲染）',
+            lambda checked: self.settings.setValue('auto_check', checked), checkable=True)
+        self.assistant_action = self._action('模型修改', self.open_assistant)
+        self.assistant_action.setIconText('模型修改')
+        self.save_settings_action = self._action('保存设置', self.save_settings)
         self.export_action = self._action('导出动作数据', self.export)
         self.preview_action = self._action('生成片段视频', lambda: self.render(False))
         self.render_action = self._action('生成整曲视频', lambda: self.render(True))
@@ -178,8 +184,8 @@ class EditorWindow(QMainWindow):
             (self.generate_action, '为当前谱面生成可编辑的指法初稿，之后可分别调整指法、轨迹和手部姿态重新生成会替换指法及轨迹修改，可撤销；本曲的姿态设置会保留'),
             (self.save_action, '保存指法、轨迹和手部姿态设置，下次打开工程可继续编辑'),
             (self.validate_action, '检查音符覆盖、手指占用、触控轨迹、遮挡和 Hold 连续性手部姿态与皮肤接触效果请通过片段视频查看'),
-            (self.export_action, '检查后导出触控序列、含姿态设置的动作数据和可继续编辑的工程生成视频请使用“生成片段视频”或“生成整曲视频”'),
-            (self.preview_action, '仅检查指定片段并生成视频；跨越片段边界的 Hold 会保留片段内的持续按住状态'),
+            (self.export_action, '导出触控序列、含姿态设置的动作数据和可继续编辑的工程；可自行选择是否自动检查'),
+            (self.preview_action, '生成指定片段视频；跨越片段边界的 Hold 会保留片段内的持续按住状态'),
             (self.render_action, '使用当前指法、轨迹和手部姿态，生成整首曲目的手部动画视频'),
             (self.replan_action, '自动重新分配所选动作的手与手指，跳过已锁定的指法；轨迹和时间保持'),
             (self.batch_path_action, '同时修改多个动作的轨迹，或一条轨迹中的多个控制点'),
@@ -193,11 +199,12 @@ class EditorWindow(QMainWindow):
         file_menu = self.menuBar().addMenu('文件')
         for action in (self.open_chart_action, self.open_project_action, self.generate_action, self.demo_action,
                        self.save_action, self.save_as_action, self.export_action, self.attach_chart_action, self.audio_action,
-                       self.background_action):
+                       self.background_action, self.save_settings_action):
             file_menu.addAction(action)
         edit_menu = self.menuBar().addMenu('编辑')
         for action in (self.undo_action, self.redo_action, self.batch_path_action, self.flick_action,
-                       self.release_action, *self.touch_actions, self.split_heads_action, self.replan_action, self.validate_action):
+                       self.release_action, *self.touch_actions, self.split_heads_action, self.replan_action,
+                       self.validate_action, self.auto_check_action, self.assistant_action):
             edit_menu.addAction(action)
         view_menu = self.menuBar().addMenu('视图与渲染')
         for action in (self.compare_action, self.preview_action, self.render_action, self.scale_action, self.performance_action):
@@ -211,6 +218,7 @@ class EditorWindow(QMainWindow):
         for action in (self.undo_action, self.redo_action, self.validate_action, self.export_action, self.preview_action,
                        self.scale_action, self.performance_action):
             toolbar.addAction(action)
+        toolbar.addAction(self.assistant_action)
 
     def _build_workspace(self):
         workspace = QWidget()
@@ -228,8 +236,10 @@ class EditorWindow(QMainWindow):
         demo.clicked.connect(self.open_demo)
         top.addWidget(demo)
         outer.addLayout(top)
-        split = QSplitter(Qt.Horizontal)
-        outer.addWidget(split, 1)
+        self.workspace_panels = QMainWindow(workspace)
+        self.workspace_panels.setWindowFlags(Qt.Widget)
+        self.workspace_panels.setDockOptions(QMainWindow.AllowNestedDocks)
+        outer.addWidget(self.workspace_panels, 1)
         left = QSplitter(Qt.Vertical)
         left.setChildrenCollapsible(False)
         left.setHandleWidth(7)
@@ -289,7 +299,7 @@ class EditorWindow(QMainWindow):
         for number in (.1, .25, .5, .75, 1., 1.5, 2.):
             self.speed.addItem(f'{number:g}×', number)
         self.speed.setCurrentIndex(4)
-        self.speed.setToolTip('调整编辑器的预览播放速度')
+        self.speed.setToolTip('预览播放速度 · X 减速 · C 加速（输入文字时不触发）')
         self.speed.currentIndexChanged.connect(self._speed_changed)
         transport.addWidget(self.speed)
         self.clock_label = QLabel('00:00.000')
@@ -361,10 +371,12 @@ class EditorWindow(QMainWindow):
         left.setStretchFactor(0, 1)
         left.setStretchFactor(1, 1)
         left.setSizes([440, 240])
-        split.addWidget(left)
+        self.preview_dock = QDockWidget('预览与时间轴', self.workspace_panels)
+        self.preview_dock.setObjectName('preview_timeline')
+        self.preview_dock.setWidget(left)
+        self.workspace_panels.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
         right = QWidget()
         right.setMinimumWidth(320)
-        right.setMaximumWidth(490)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(7, 0, 0, 0)
         self.inspector_split = QSplitter(Qt.Vertical)
@@ -538,7 +550,6 @@ class EditorWindow(QMainWindow):
         self.problem_list.setToolTip('点击问题定位并放大时间轴，点击下方动作可分别编辑')
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setMinimumWidth(340)
-        self.inspector_tabs.setMaximumWidth(510)
         self.inspector_tabs.addTab(right, '指法与轨迹')
         self.pose_panel = PosePanel(lambda: (self.range_start.value() - self.offset, self.range_end.value() - self.offset))
         self.pose_panel.change.connect(self._edit_pose)
@@ -555,8 +566,11 @@ class EditorWindow(QMainWindow):
         self.inspector_tabs.setTabToolTip(1, '选择手腕或手指后，调整整曲默认姿态，或用片段关键帧编排动作')
         self.view_tabs.currentChanged.connect(self._pose_tab_changed)
         self.inspector_tabs.currentChanged.connect(self._pose_tab_changed)
-        split.addWidget(self.inspector_tabs)
-        split.setSizes([920, 380])
+        self.inspector_dock = QDockWidget('指法与轨迹 / 手部姿态', self.workspace_panels)
+        self.inspector_dock.setObjectName('fingering_pose')
+        self.inspector_dock.setWidget(self.inspector_tabs)
+        self.workspace_panels.addDockWidget(Qt.RightDockWidgetArea, self.inspector_dock)
+        self.workspace_panels.resizeDocks([self.preview_dock, self.inspector_dock], [920, 380], Qt.Horizontal)
         self.task_status = TaskStatus()
         outer.addWidget(self.task_status)
         self.progress_label = QLabel('就绪')
@@ -588,7 +602,21 @@ class EditorWindow(QMainWindow):
         self.log_dock.hide()
         self.task_status.log_button.clicked.connect(self.show_job_log)
         window_menu = self.menuBar().addMenu('窗口')
+        for dock in (self.preview_dock, self.inspector_dock):
+            window_menu.addAction(dock.toggleViewAction())
+            window_menu.addAction(self._action('分离 / 停靠' + dock.windowTitle(),
+                lambda checked=False, panel=dock: self.toggle_panel_window(panel)))
+        window_menu.addSeparator()
         window_menu.addAction(self.log_dock.toggleViewAction())
+        self.model_dock = QDockWidget('模型修改', self)
+        self.model_dock.setObjectName('model_edit')
+        self.model_panel = None
+        self.addDockWidget(Qt.RightDockWidgetArea, self.model_dock)
+        self.model_dock.hide()
+        self.model_dock.visibilityChanged.connect(lambda visible: self.open_assistant() if visible and self.model_panel is None else None)
+        window_menu.addAction(self.model_dock.toggleViewAction())
+        window_menu.addAction(self._action('修改记录', self.open_history))
+        window_menu.addAction(self._action('分离 / 停靠模型窗口', self.toggle_model_window))
         window_menu.addAction(self._action('显示任务进度', self.task_status.show))
         app_log_action = self._action('打开程序日志', self.open_app_log)
         app_log_action.setToolTip(str(APP_LOG))
@@ -597,13 +625,30 @@ class EditorWindow(QMainWindow):
         self.play_shortcut.setShortcut('Space')
         self.play_shortcut.triggered.connect(self.toggle_play)
         self.addAction(self.play_shortcut)
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_X, Qt.Key_C) and not event.modifiers():
+            focus = QApplication.focusWidget()
+            if focus is not None and focus.window() in (self, self.model_dock, self.preview_dock, self.inspector_dock):
+                editing = isinstance(focus, (QLineEdit, QAbstractSpinBox)) or isinstance(focus, (QPlainTextEdit, QTextEdit)) and not focus.isReadOnly()
+                if not editing:
+                    step = -1 if event.key() == Qt.Key_X else 1
+                    self.speed.setCurrentIndex(max(0, min(self.speed.count() - 1, self.speed.currentIndex() + step)))
+                    return True
+        return super().eventFilter(watched, event)
+
+    def toggle_panel_window(self, panel):
+        panel.show()
+        panel.setFloating(not panel.isFloating())
+        panel.raise_()
 
     @property
     def offset(self):
         return self.source.chart.offset if self.source else (self.document.chart.get('offset', 0.) if self.document else 0.)
 
     def _asset_defaults(self):
-        result = {key: self.settings.value(key, '', type=str) for key in ('model', 'resources', 'blender')}
+        result = read_preferences(self.settings)
         result['background'] = self.source.reference.get('background', '') if self.source else ''
         for key, path in (('model', ASSETS / 'Hands + armature.blend'), ('resources', ASSETS / 'resources.zip')):
             if not result[key] and path.exists():
@@ -787,7 +832,8 @@ class EditorWindow(QMainWindow):
         self.finger.clear()
         for finger in document.allowed_fingers if document else FINGER_NAMES:
             self.finger.addItem(FINGER_NAMES[finger], finger)
-        self._show_problems(edit_check(document, self.source.chart if self.source else None) + draft_warnings(document) if document else [])
+        self._show_problems((edit_check(document, self.source.chart if self.source else None) + draft_warnings(document))
+                            if document and self.auto_check_action.isChecked() else [])
         self._update_duration()
         self._refresh_actions()
         self._update_title()
@@ -815,6 +861,13 @@ class EditorWindow(QMainWindow):
             options['pose'] = copy.deepcopy(self.document.pose)
         for key in ('model', 'blender'):
             self.settings.setValue(key, options[key])
+        self.settings.setValue('generator_fingers', ['index', 'index_middle', 'all'][dialog.fingers.currentIndex()])
+        for key in ('fingering_objective', 'speed_limits', 'judgement_windows'):
+            self.settings.setValue(key, options['settings'][key])
+        self.settings.setValue('solver_beam', options['settings']['beam_width'])
+        self.settings.setValue('solver_candidates', options['settings']['candidates_per_finger'])
+        self.settings.setValue('keep_unplanned', options['keep_unplanned'])
+        save_preferences(self)
         self._guard_replace(lambda: self.jobs.start('generate', chart=self.source.reference['path'],
                             chart_reference=dict(self.source.reference), options=options))
 
@@ -968,6 +1021,10 @@ class EditorWindow(QMainWindow):
     def _changed(self, ids):
         if ids == []:
             return
+        if self.document and tuple(self.finger.itemData(i) for i in range(self.finger.count())) != self.document.allowed_fingers:
+            self.finger.clear()
+            for finger in self.document.allowed_fingers:
+                self.finger.addItem(FINGER_NAMES[finger], finger)
         self._refresh_pose_editor()
         if ids is None:
             self._update_duration()
@@ -1000,10 +1057,10 @@ class EditorWindow(QMainWindow):
                     if row is not None:
                         low = previous = row
             self.path_table.selectionModel().select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-        # A continuation may change the physical DOWN of later segments, and
-        # a split may remove rows. Rebuild the inexpensive structural feedback.
-        problems = edit_check(self.document, self.source.chart if self.source else None)
-        problems.extend(draft_warnings(self.document))
+        problems = []
+        if self.auto_check_action.isChecked():
+            problems = edit_check(self.document, self.source.chart if self.source else None)
+            problems.extend(draft_warnings(self.document))
         self._show_problems(problems)
         self.canvas.update()
         self.timeline.update()
@@ -1048,6 +1105,8 @@ class EditorWindow(QMainWindow):
         self.canvas.update()
         change = stack[-1]
         changed = self.document.redo() if redo else self.document.undo()
+        if change.preferences_before or change.preferences_after:
+            apply_preferences(self, change.preferences_after if redo else change.preferences_before)
         if change.kind == 'chart':
             self._restore_chart()
         elif change.kind == 'structure':
@@ -1243,7 +1302,7 @@ class EditorWindow(QMainWindow):
         if not parent:
             return
         output = Path(parent) / ('fingering-' + datetime.now().strftime('%Y%m%d-%H%M%S'))
-        self.jobs.start('export', self.document, output=str(output))
+        self.jobs.start('export', self.document, output=str(output), auto_check=self.auto_check_action.isChecked())
 
     def render(self, full):
         if not self.document or not self.source:
@@ -1262,10 +1321,44 @@ class EditorWindow(QMainWindow):
             return
         for key in ('model', 'resources', 'blender'):
             self.settings.setValue(key, options[key])
+        prefix = 'render' if full else 'clip'
+        self.settings.setValue(prefix + '_resolution', f"{options['width']}x{options['height']}")
+        self.settings.setValue(prefix + '_fps', options['fps'])
+        self.auto_check_action.setChecked(options['auto_check'])
+        self.settings.setValue('auto_check', options['auto_check'])
+        if not full:
+            self.range_start.setValue(options['start'])
+            self.range_end.setValue(options['start'] + options['duration'])
+        save_preferences(self)
         if options.get('background'):
             if not self._associate_media('background', options['background']):
                 return
-        self.jobs.start('render', self.document, output=str(output), options=options)
+        self.jobs.start('render', self.document, output=str(output), options=options, auto_check=options['auto_check'])
+
+    def open_assistant(self):
+        from flowphi.ui.model_edit import ModelEditPanel
+        if self.model_panel is None:
+            self.model_panel = ModelEditPanel(self)
+            self.model_dock.setWidget(self.model_panel)
+            self.resizeDocks([self.model_dock], [410], Qt.Horizontal)
+        self.model_dock.show()
+        self.model_dock.raise_()
+        self.model_panel.prompt.setFocus()
+
+    def open_history(self):
+        self.open_assistant()
+        self.model_panel.tabs.setCurrentWidget(self.model_panel.history)
+
+    def toggle_model_window(self):
+        self.open_assistant()
+        self.model_panel.toggle_floating()
+
+    def save_settings(self):
+        try:
+            save_preferences(self)
+            self._progress('编辑器设置已保存')
+        except OSError as exc:
+            self._error(str(exc))
 
     def choose_audio(self):
         if not self.source:
@@ -1474,6 +1567,7 @@ class EditorWindow(QMainWindow):
         if not hasattr(self, 'canvas'):
             return
         available = not self.jobs.running and not self._io
+        self.assistant_action.setEnabled(available)
         loaded = self.document is not None
         ready = loaded and self.source is not None
         for action in (self.open_chart_action, self.open_project_action, self.demo_action):
@@ -1615,7 +1709,7 @@ class EditorWindow(QMainWindow):
             if current:
                 self._show_problems(result['issues'])
                 self._progress(('触控检查通过' + (f"另有 {len(result['issues'])} 条提示，可在“问题”页查看" if result['issues'] else '') +
-                                '导出时会再次检查最终触控数据') if result['valid'] else '触控检查发现需修复项，单击“问题”页中的条目可定位')
+                                '可在“自动检查”中选择是否在导出时再次检查') if result['valid'] else '触控检查发现需修复项，单击“问题”页中的条目可定位')
                 if result['issues']:
                     self._show_problem_tab()
             else:
@@ -1649,13 +1743,20 @@ class EditorWindow(QMainWindow):
             document._saved_state = -1
             self._attach_project(document, self.source)
         pending = sum(c.get('draft_fallback') is not None for c in document.baseline['contacts'])
-        if pending:
+        if pending and self.auto_check_action.isChecked():
             self._show_problem_tab()
             self._progress(f'初稿已生成，保留全部音符；{pending} 段动作使用临时指法，需要检查单击“问题”中的条目可定位，修改后点击“检查方案”')
         else:
             self._progress('指法初稿已生成选择动作可修改手指和轨迹；切到“手部姿态”可调整手腕和空闲手指')
 
     def closeEvent(self, event):
+        if self.model_panel is not None:
+            self.model_panel.cancel()
+            self.model_panel.save_history()
+            if self.model_panel.jobs.running or any(t.isRunning() for t in self.model_panel.findChildren(QThread)):
+                QTimer.singleShot(100, self.close)
+                event.ignore()
+                return
         if self._io:
             self._pending_close = True
             event.ignore()
@@ -1686,4 +1787,10 @@ class EditorWindow(QMainWindow):
                 return
         self.pause()
         self.player.stop()
+        try:
+            save_preferences(self)
+        except OSError as exc:
+            self._error(str(exc))
+            event.ignore()
+            return
         event.accept()

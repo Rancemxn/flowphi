@@ -86,7 +86,7 @@ def validate_export(document, source, *, time_range=None):
     if problems:
         return dict(valid=False, issues=problems, geometry_checked=False)
     event('编译触控数据', stage='compile')
-    raw, plan = compile_plan(document, source.chart, time_range=time_range)
+    raw, plan = compile_plan(document, source.chart, time_range=time_range, check=True)
     canonical = PlanDocument(plan, chart=source.reference, copy_baseline=False, allow_empty=True)
     event('检查触控判定', stage='validate', detail='检查手指占用、判定区域和 Hold 连续性')
     report = validate(canonical, source.chart, time_range=time_range, resolved=True,
@@ -102,6 +102,9 @@ def execute(request):
     work = Path(request['work']).resolve()
     work.mkdir(parents=True, exist_ok=True)
     cache = Path(request.get('cache', DEFAULT_CACHE)).resolve()
+    if kind == 'model_python':
+        from flowphi.ui.model_python import calculate
+        return calculate(request['code'], request['data'])
     event('读取谱面与工程', stage='input')
     if kind == 'generate':
         from flowphi.planning.planner import Settings, plan
@@ -141,7 +144,8 @@ def execute(request):
         from flowphi.ui.optimise import reassign
         event('重新分配手指', stage='replan', detail=f"已选 {len(request['selected'])} 段动作；跳过已锁定的指法")
         return reassign(document, request['selected'], width=request.get('beam_width', 32),
-                        max_contacts=request.get('max_contacts', 1200), chart=source.chart)
+                        max_contacts=request.get('max_contacts', 1200), chart=source.chart,
+                        hands=request.get('hands'), fingers=request.get('fingers'))
     if kind == 'zone':
         from flowphi.planning.contacts import ContactGeometry
         from flowphi.ui.contact_state import resolve_contacts
@@ -202,9 +206,10 @@ def execute(request):
         low = math.floor((start - source.chart.offset) * 1000) / 1000
         high = math.ceil((start + math.ceil(duration * fps) / fps - source.chart.offset) * 1000) / 1000
         time_range = [low, high]
-        event(f'仅检查并导出片段 {start:.3f}–{start + duration:.3f} s 内的动作')
-    report = validate_export(document, source, time_range=time_range)
-    if not report['valid']:
+        event(f'导出片段 {start:.3f}–{start + duration:.3f} s 内的动作')
+    report = (validate_export(document, source, time_range=time_range) if request.get('auto_check', False)
+              else dict(valid=None, issues=[], geometry_checked=False, skipped=True, time_range=time_range))
+    if not report.get('skipped') and not report['valid']:
         return dict(validation=report, exported=False)
     from flowphi.ui.compiler import export_plan
     event('写入动作数据', stage='export', detail=str(output))

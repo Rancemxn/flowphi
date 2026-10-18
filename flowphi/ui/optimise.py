@@ -3,6 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 
+class AssignmentUnavailable(ValueError):
+    def __init__(self, row):
+        self.row = row
+        super().__init__('暂未找到满足当前动作安排的指法')
+
+
 def constrained_beam(unary, neighbors, allowed, width):
     n, k = unary.shape
     histories = np.zeros((1, n), dtype=np.int8)
@@ -16,7 +22,7 @@ def constrained_beam(unary, neighbors, allowed, width):
         ranked = np.argsort(values, axis=None)
         ranked = ranked[np.isfinite(values.ravel()[ranked])][:width]
         if not len(ranked):
-            raise ValueError('当前锁定条件下没有找到可用指法，请解锁相关动作的指法，或扩大选择范围')
+            raise AssignmentUnavailable(i)
         parents, labels = np.divmod(ranked, k)
         totals = values[parents, labels]
         histories = histories[parents].copy()
@@ -24,7 +30,7 @@ def constrained_beam(unary, neighbors, allowed, width):
     return histories[int(np.argmin(totals))]
 
 
-def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
+def _reassign_contacts(document, selected, *, width=32, max_contacts=1200, hands=None, fingers=None):
     from flowphi.planning.costs import assignment_keys, graph, objective
     from flowphi.planning.load import assign_load, score_labels
     selected = set(selected)
@@ -32,8 +38,8 @@ def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
         raise ValueError('请先选择需要重新分配手指的动作')
     mutable = {i for i in selected if not document.contact(i)['assignment_locked']}
     if not mutable:
-        raise ValueError('所选指法均已锁定请先解锁需要算法调整的部分')
-    if not 1 <= width <= 128 or not 32 <= max_contacts <= 5000:
+        raise ValueError('所选动作的指法都已锁定；需要重新安排时，请先解锁这些动作')
+    if not 1 <= width <= 128 or not 32 <= max_contacts:
         raise ValueError('重新分配的候选数或动作数上限无效，请检查性能设置')
     low = min(document.contact(i)['start'] for i in mutable)
     high = max(document.contact(i)['end'] for i in mutable)
@@ -49,7 +55,7 @@ def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
     context.update(before.values())
     context.update(after.values())
     if len(context) > max_contacts:
-        raise ValueError(f'所选动作及参与计算的前后动作共 {len(context)} 段，超过当前上限 {max_contacts}请缩小选择范围，或在性能设置中提高上限')
+        raise ValueError(f'本次需计算 {len(context)} 段动作，超过手动设置的 {max_contacts} 段上限；请在性能设置中提高上限，或分段安排')
     ids = document.sorted_ids(context)
     contacts = [dict(document.contact(i)) for i in ids]
     for c in contacts:
@@ -59,11 +65,17 @@ def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
         c.pop('manual_hand', None)
     plan = document.baseline
     keys = assignment_keys(plan)
+    if hands is not None and (not hands or any(h not in ('left', 'right') for h in hands)):
+        raise ValueError('可用手无效')
+    if fingers is not None and (not fingers or any(f not in document.allowed_fingers for f in fingers)):
+        raise ValueError('可用手指无效')
     unary, neighbors = graph(contacts, plan)
     allowed = np.ones((len(ids), len(keys)), dtype=bool)
     current = np.array([keys.index((c['hand'], c['finger'])) for c in contacts])
     for row, i in enumerate(ids):
-        if i not in mutable:
+        if i in mutable:
+            allowed[row] = [(hands is None or h in hands) and (fingers is None or f in fingers) for h, f in keys]
+        else:
             allowed[row] = False
             allowed[row, current[row]] = True
     strict_neighbors = [[(j, np.where(matrix >= 1e8, np.inf, matrix)) for j, matrix in edges] for edges in neighbors]
@@ -73,10 +85,18 @@ def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
         old_score = score_labels(contacts, keys, plan['settings'], current)[0]
         new_score = score_labels(contacts, keys, plan['settings'], labels)[0]
     else:
-        labels = constrained_beam(unary, strict_neighbors, allowed, width)
+        try:
+            labels = constrained_beam(unary, strict_neighbors, allowed, width)
+        except AssignmentUnavailable as exc:
+            c = contacts[exc.row]
+            locked = sum(i not in mutable for i in ids)
+            raise ValueError(f"暂未排出合适的指法：谱面时间 {c['start']:.3f} 秒附近，动作 #{ids[exc.row] + 1}。"
+                f'当前有 {locked} 段边界或锁定动作保持原样。'
+                '请检查这一段的触点复用、按下/松开时间和滑动轨迹；这里只分配现有动作，不会调整它们的时间和轨迹，不能据此判定谱面无解。') from None
         old_score = objective(current, unary, strict_neighbors)
         new_score = objective(labels, unary, strict_neighbors)
-    old_valid = all(matrix[current[row], current[j]] < 1e8 for row, edges in enumerate(neighbors) for j, matrix in edges)
+    old_valid = all(allowed[row, label] for row, label in enumerate(current)) and all(
+        matrix[current[row], current[j]] < 1e8 for row, edges in enumerate(neighbors) for j, matrix in edges)
     if old_valid and old_score <= new_score:
         labels = current
         new_score = old_score
@@ -90,15 +110,17 @@ def _reassign_contacts(document, selected, *, width=32, max_contacts=1200):
                 score_after=float(new_score), mode='load' if load_only else 'balanced')
 
 
-def reassign(document, selected, *, width=32, max_contacts=1200, chart=None):
+def reassign(document, selected, *, width=32, max_contacts=1200, chart=None, hands=None, fingers=None):
     from flowphi.ui.contact_state import resolve_contacts
     from flowphi.ui.model import PlanDocument
     selected = set(selected)
     if not selected or any(not isinstance(i, int) or not 0 <= i < len(document) for i in selected):
         raise ValueError('请先选择需要重新分配手指的动作')
     contacts, groups, problems = resolve_contacts(document, chart)
-    if any(selected.intersection(p['contacts']) for p in problems):
-        raise ValueError('请先修复所选动作的接续方式，再重新分配手指')
+    problem = next((p for p in problems if selected.intersection(p['contacts'])), None)
+    if problem:
+        raise ValueError(f"谱面时间 {problem['time']:.3f} 秒的动作 #{problem['contacts'][0] + 1} 没有接上前面的触点。"
+                         '请把它和要接续的动作安排给同一手指；确需独立点击时再设为“重新按下”。')
     chosen = {groups[i] for i in selected}
     for i in chosen:
         if not set(contacts[i]['editor_contacts']) <= selected:
@@ -108,7 +130,7 @@ def reassign(document, selected, *, width=32, max_contacts=1200, chart=None):
         c['assignment_locked'] = any(document.contact(i)['assignment_locked'] for i in c['editor_contacts'])
         c['fixed_finger'] = [c['hand'], c['finger']] if c['assignment_locked'] else None
     physical = PlanDocument(dict(document.baseline, contacts=contacts), chart=document.chart, copy_baseline=False)
-    result = _reassign_contacts(physical, chosen, width=width, max_contacts=max_contacts)
+    result = _reassign_contacts(physical, chosen, width=width, max_contacts=max_contacts, hands=hands, fingers=fingers)
     result['assignments'] = [[j, hand, finger] for i, hand, finger in result['assignments']
                              for j in contacts[i]['editor_contacts']]
     result['changed_contacts'] = len(result['assignments'])

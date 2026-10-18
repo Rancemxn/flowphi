@@ -103,7 +103,7 @@ def draft_warnings(document, indices=None):
         if pending.get('empty_zone_time') is not None:
             message += ' 这段动作中有时刻没有可用判定区域'
         if i in document.edits:
-            message += ' 已有人工修改，是否可导出取决于完整检查结果'
+            message += ' 已有人工修改，可手动检查当前效果'
         problems.append(issue('draft_fallback', message, [i], c['beat'], 'warning'))
     return problems
 

@@ -12,10 +12,10 @@ from flowphi.ui.contact_state import clip_contact, resolve_contacts
 from flowphi.motion import FINGER_ORDER, attach_plan, finish_motion
 
 
-def compile_plan(document, chart, *, time_range=None):
+def compile_plan(document, chart, *, time_range=None, check=False):
     from flowphi.planning.touch import ScreenUtil, TouchAction, VirtualTouchEvent, dump_data
     from flowphi.rendering.pipeline import contacts_from_psap
-    conflicts = quick_check(document, chart=chart, time_range=time_range)
+    conflicts = quick_check(document, chart=chart, time_range=time_range) if check else []
     if conflicts:
         raise ValueError('请先解决手指占用或触控接续问题，再导出动作数据')
     plan = copy.deepcopy(document.baseline)
@@ -76,7 +76,7 @@ def compile_plan(document, chart, *, time_range=None):
     plan.setdefault('diagnostics', {})['finger_usage'] = dict(Counter(f"{c['hand']}:{c['finger']}" for c in contacts))
     plan['diagnostics']['source_estimates_before_edit'] = bool(document.edits)
     plan['diagnostics'].setdefault('degraded', [])
-    if document.edits:
+    if document.edits and check:
         plan['algorithm_diagnostics'] = copy.deepcopy(document.baseline.get('diagnostics', {}))
         plan['diagnostics']['degraded'] = [dict(
             note_ids=sorted({n for i in warning['contacts'] for n in document.contact(i)['note_ids']}),
@@ -87,13 +87,14 @@ def compile_plan(document, chart, *, time_range=None):
     return raw, plan
 
 
-def export_plan(document, source, output, report, *, time_range=None):
-    if not report.get('valid') or not report.get('geometry_checked'):
+def export_plan(document, source, output, report=None, *, time_range=None):
+    checked = report is not None and not report.get('skipped', False)
+    if checked and (not report.get('valid') or not report.get('geometry_checked')):
         raise ValueError('导出前需要通过完整的手指占用与判定区域检查')
-    if report.get('time_range') != time_range:
+    if checked and report.get('time_range') != time_range:
         raise ValueError('检查范围与导出范围不一致，请重新检查')
-    raw, plan = compile_plan(document, source.chart, time_range=time_range)
-    if report.get('validated_psap_sha256') != hashlib.sha256(raw).hexdigest():
+    raw, plan = compile_plan(document, source.chart, time_range=time_range, check=checked)
+    if checked and report.get('validated_psap_sha256') != hashlib.sha256(raw).hexdigest():
         raise ValueError('方案已修改，请重新检查后再导出')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -103,11 +104,11 @@ def export_plan(document, source, output, report, *, time_range=None):
         raise ValueError('目标目录已有导出的动作数据，请选择新的目录')
     (output / 'plan.psap').write_bytes(raw)
     write_json_atomic(output / 'motion-plan.json', plan)
-    write_json_atomic(output / 'validation.json', report)
+    write_json_atomic(output / 'validation.json', report or dict(valid=None, issues=[], geometry_checked=False, skipped=True))
     write_json_atomic(output / 'project.fingering.json', document.snapshot(destination=output / 'project.fingering.json'))
     manifest = dict(format='flowphi-authored-render', version=1, chart=source.reference,
                     psap_sha256=hashlib.sha256(raw).hexdigest(),
                     motion_sha256=hashlib.sha256((output / 'motion-plan.json').read_bytes()).hexdigest(),
-                    geometry_checked=True, time_range=time_range)
+                    geometry_checked=checked, time_range=time_range)
     write_json_atomic(output / 'render-inputs.json', manifest)
     return manifest

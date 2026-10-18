@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from bisect import bisect_right
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 import json
 import math
 import os
@@ -124,6 +125,10 @@ class Change:
     after_state: int
     size: int
     kind: str = 'contacts'
+    created: str = field(default_factory=lambda: datetime.now().strftime('%H:%M:%S'))
+    source: str = '你'
+    preferences_before: dict = field(default_factory=dict)
+    preferences_after: dict = field(default_factory=dict)
 
 
 class PlanDocument:
@@ -206,6 +211,7 @@ class PlanDocument:
         size = len(json.dumps([before, after], separators=(',', ':')))
         self._serial += 1
         change = Change(label, before, after, self._state, self._serial, size, kind)
+        change.source = '模型' if label.startswith('模型') else '你'
         changed = self._apply_change(change, forward=True)
         self.undo_stack.append(change)
         self.history_bytes += size
@@ -391,13 +397,13 @@ class PlanDocument:
         self._commit_change('拆开合并的音符头', before, after, 'structure')
         return changed
 
-    def replace_plan(self, document):
+    def replace_plan(self, document, label='重新生成指法初稿'):
         if (self.chart.get('sha256') and self.chart['sha256'] != document.chart.get('sha256') or
                 set(self.note_contacts) != set(document.note_contacts)):
             raise ValueError('新初稿与当前工程的谱面不匹配')
         before = dict(baseline=self.baseline, edits=copy.deepcopy(self.edits), pose=self.pose)
         after = dict(baseline=document.baseline, edits=copy.deepcopy(document.edits), pose=document.pose)
-        return self._commit_change('重新生成指法初稿', before, after, 'structure')
+        return self._commit_change(label, before, after, 'structure')
 
     def _apply_structure(self, values, state):
         self.baseline = values['baseline']
@@ -443,6 +449,10 @@ class PlanDocument:
             return None
         if change.kind == 'chart':
             self.chart = copy.deepcopy(values)
+            self._state = state
+            self.revision += 1
+            return None
+        if change.kind == 'preferences':
             self._state = state
             self.revision += 1
             return None
